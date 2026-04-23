@@ -26,7 +26,7 @@ STRIKE_DIVISOR = 100
 # SCRIPT_DIR = "/home/algo/strategies/ulpl"
 SCRIPT_DIR = r"E:\SHARMKT\ALGO\strategies\ulpl"
 LOG_FILE = os.path.join(SCRIPT_DIR, "ulpl.log")
-CREDENTIALS_PATH = os.path.join(SCRIPT_DIR, "config_ulpl.json")
+CREDENTIALS_PATH = os.path.join(SCRIPT_DIR, "ulpl_config.json")
 SYMBOL_PATH = os.path.join(SCRIPT_DIR, "symbol_ulpl.json")
 
 # KEYDOCS_DIR = "/home/ubuntu/keydocs"
@@ -40,23 +40,34 @@ NIFTY_INDICATORS_PATH = os.path.join(INDICATORS_DIR, "NIFTY.json")
 
 TRADE_LOG_PATH = os.path.join(SCRIPT_DIR, "Paper_ulpl.xlsx")
 TRADE_LOG_COLUMNS = [
-    "symbol", "token", "open", "close", "trend", "qty", "entry date&time",
-    "sell", "buy", "exit date&time", "p&l", "entry reason", "exit reason"
+    "account", "broker", "strike_side", "strike", "expiry",
+    "token", "open", "close", "trend", "qty",
+    "entry datetime", "sell", "buy", "exit datetime",
+    "p&l", "entry_reason", "exit_reason",
+    "sl", "entry_order_id", "sl_order_id",
 ]
-TRADE_LOG_COLUMNS_DTYPES = {
-    "symbol": "object",
-    "token": "object",
-    "open": "float64",
-    "close": "float64",
-    "trend": "object",
-    "qty": "int64",
-    "entry date&time": "object",
-    "sell": "float64",
-    "buy": "float64",
-    "exit date&time": "object",
-    "p&l": "float64",
-    "entry reason": "object",
-    "exit reason": "object",
+
+TRADE_LOG_DTYPES: Dict[str, str] = {
+    "account":        "object",
+    "broker":         "object",
+    "strike_side":    "object",
+    "strike":         "float64",
+    "expiry":         "object",
+    "token":          "object",
+    "open":           "float64",
+    "close":          "float64",
+    "trend":          "object",
+    "qty":            "int64",
+    "entry datetime": "object",
+    "sell":           "float64",
+    "buy":            "float64",
+    "exit datetime":  "object",
+    "p&l":            "float64",
+    "entry_reason":   "object",
+    "exit_reason":    "object",
+    "sl":             "float64",
+    "entry_order_id": "object",
+    "sl_order_id":    "object",
 }
 
 # === LOGGING ===
@@ -110,7 +121,7 @@ def is_trading_day(today: date, holidays: Set[date], weekly_off_days: Optional[L
 
 
 def load_configurations() -> Tuple[
-    str, int, str, str, Dict[str, Any], bool, int, Dict[str, Any], Dict[str, Any], str
+    str, int, str, str, Dict[str, Any], bool, int, Dict[str, Any], Dict[str, Any], str, str
 ]:
     try:
         with open(CREDENTIALS_PATH, "r") as f:
@@ -119,30 +130,36 @@ def load_configurations() -> Tuple[
         with open(SYMBOL_PATH, "r") as f:
             symbol_config = json.load(f)
 
-        required_keys = ["telegram_bot_token", "telegram_chat_id", "matched_csv_path"]
-        for key in required_keys:
-            if key not in config:
-                raise KeyError(f"Missing key in credentials config: {key}")
+        if "telegram" not in config:
+            raise KeyError("Missing 'telegram' in credentials config")
+
+        bot_token = config["telegram"].get("bot_token", "*")
+        chat_id = config["telegram"].get("chat_id", "*")
+
+        if "matched_csv_path" not in config:
+            raise KeyError("Missing 'matched_csv_path' in credentials config")
 
         sma_period = config.get("SMA_PERIOD", 12)
         interval = config.get("interval", "THIRTY_MINUTE")
         paper_trading = config.get("paper_trading", True)
-        paper_lot = config.get("paper_lot", 1)
+        paper_lot = config.get("paper_lot", 4)
         market = config.get("market", {})
         intervals = config.get("intervals", {})
         matched_csv_path = config["matched_csv_path"]
+        indicators_dir = config.get("indicators_dir", r"E:\SHARMKT\ALGO\data\data\indicators")
 
         return (
             interval,
             sma_period,
-            config["telegram_bot_token"],
-            config["telegram_chat_id"],
+            bot_token,
+            chat_id,
             symbol_config,
             paper_trading,
             paper_lot,
             market,
             intervals,
-            matched_csv_path
+            matched_csv_path,
+            indicators_dir
         )
     except Exception as e:
         logger.error(f"Failed to load configurations: {e}\n{traceback.format_exc()}")
@@ -193,13 +210,14 @@ def get_next_candle_close_time(
     return last_closed + timedelta(minutes=interval_minutes)
 
 
-def load_nifty_indicators(interval: str, intervals_config: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+def load_nifty_indicators(interval: str, intervals_config: Dict[str, Any], indicators_dir: str) -> Optional[Dict[str, Any]]:
     try:
-        if not os.path.exists(NIFTY_INDICATORS_PATH):
-            logger.error(f"Indicators file not found: {NIFTY_INDICATORS_PATH}")
+        path = os.path.join(indicators_dir, "NIFTY.json")
+        if not os.path.exists(path):
+            logger.error(f"Indicators file not found: {path}")
             return None
 
-        with open(NIFTY_INDICATORS_PATH, "r", encoding="utf-8") as f:
+        with open(path, "r", encoding="utf-8") as f:
             data = json.load(f)
 
         tf = get_interval_key(intervals_config, interval)
@@ -327,7 +345,8 @@ def load_instrument_tokens(matched_csv_path: str, expiry_str: str) -> List[Dict[
         nifty_options = nifty_options.rename(columns={"a_symbol": "symbol"})
 
         logger.info(f"Loaded {len(nifty_options)} NIFTY options for expiry {expiry_str} from matched.csv")
-        return nifty_options[["symbol", "token", "strike"]].to_dict("records")
+        nifty_options["type"] = nifty_options["symbol"].str[-2:]
+        return nifty_options[["symbol", "token", "strike", "a_expiry", "type"]].to_dict("records")
 
     except Exception as e:
         logger.error(f"Error loading instruments from matched.csv: {e}\n{traceback.format_exc()}")
@@ -372,14 +391,19 @@ def load_trade_log() -> pd.DataFrame:
     if os.path.exists(TRADE_LOG_PATH):
         try:
             df = pd.read_excel(TRADE_LOG_PATH)
-            for col, dtype in TRADE_LOG_COLUMNS_DTYPES.items():
-                if col in df and df[col].dtype != dtype:
+            # Add missing columns
+            for col, dtype in TRADE_LOG_DTYPES.items():
+                if col not in df:
+                    df[col] = pd.Series(dtype=dtype)
+                elif df[col].dtype != dtype:
                     df[col] = df[col].astype(dtype, errors="ignore")
+            # Drop old columns not in TRADE_LOG_COLUMNS
+            df = df[[c for c in TRADE_LOG_COLUMNS if c in df]]
             return df
         except Exception as e:
             logger.error(f"Failed to read trade log: {e}")
 
-    df = pd.DataFrame({col: pd.Series(dtype=dtype) for col, dtype in TRADE_LOG_COLUMNS_DTYPES.items()})
+    df = pd.DataFrame({col: pd.Series(dtype=dtype) for col, dtype in TRADE_LOG_DTYPES.items()})
     df.to_excel(TRADE_LOG_PATH, index=False)
     return df
 
@@ -387,11 +411,11 @@ def load_trade_log() -> pd.DataFrame:
 def save_trade_log(df: pd.DataFrame):
     df.to_excel(TRADE_LOG_PATH, index=False)
     col_widths = {
-        "symbol": 21,
-        "entry date&time": 17.57,
-        "exit date&time": 17.57,
-        "entry reason": 14,
-        "exit reason": 14,
+
+        "entry datetime": 17.57,
+        "exit datetime": 17.57,
+        "entry_reason": 14,
+        "exit_reason": 14,
         "open": 10,
         "close": 10,
         "SL": 10
@@ -409,7 +433,7 @@ def save_trade_log(df: pd.DataFrame):
 def add_trade_log_row(trade: Dict[str, Any]):
     df = load_trade_log()
     row_df = pd.DataFrame([trade])
-    for col, dtype in TRADE_LOG_COLUMNS_DTYPES.items():
+    for col, dtype in TRADE_LOG_DTYPES.items():
         if col in row_df and row_df[col].dtype != dtype:
             row_df[col] = row_df[col].astype(dtype, errors="ignore")
     if df.empty:
@@ -419,16 +443,14 @@ def add_trade_log_row(trade: Dict[str, Any]):
     save_trade_log(df)
 
 
-def update_trade_exit(symbol: str, token: str, exit_time: str, exit_price: float, p_and_l: float, exit_reason: str):
+def update_trade_exit(token: str, exit_time: str, exit_price: float, p_and_l: float, exit_reason: str):
     df = load_trade_log()
-    symbol = str(symbol)
     token = str(token)
 
-    exit_dt_col = df["exit date&time"].astype(str)
+    exit_dt_col = df["exit datetime"].astype(str)
     is_exit_null = exit_dt_col.isnull() | (exit_dt_col == "") | (exit_dt_col.str.lower() == "nan")
 
     cond = (
-        (df["symbol"].astype(str) == symbol) &
         (df["token"].astype(str) == token) &
         is_exit_null
     )
@@ -436,10 +458,10 @@ def update_trade_exit(symbol: str, token: str, exit_time: str, exit_price: float
     idx = df[cond].index
     if not idx.empty:
         i = idx[0]
-        df.at[i, "exit date&time"] = str(exit_time)
+        df.at[i, "exit datetime"] = str(exit_time)
         df.at[i, "buy"] = float(exit_price)
         df.at[i, "p&l"] = float(p_and_l)
-        df.at[i, "exit reason"] = str(exit_reason)
+        df.at[i, "exit_reason"] = str(exit_reason)
         save_trade_log(df)
         logger.info("Trade exit updated and saved.")
     else:
@@ -448,11 +470,13 @@ def update_trade_exit(symbol: str, token: str, exit_time: str, exit_price: float
 
 def get_active_trades() -> pd.DataFrame:
     df = load_trade_log()
-    return df[df["exit date&time"].isnull()]
+    return df[df["exit datetime"].isnull()]
 
 
 def log_trade_entry(
-    symbol: str,
+    strike_side: str,
+    strike: float,
+    expiry: str,
     token: str,
     open_price: float,
     close_price: float,
@@ -460,22 +484,30 @@ def log_trade_entry(
     qty: int,
     entry_time: str,
     sell_price: float,
-    entry_reason: str
+    entry_reason: str,
+    paper_trading: bool
 ):
     trade = {
-        "symbol": symbol,
+        "account": "Paper" if paper_trading else None,
+        "broker": "Paper" if paper_trading else None,
+        "strike_side": strike_side,
+        "strike": strike,
+        "expiry": expiry,
         "token": token,
         "open": open_price,
         "close": close_price,
         "trend": trend,
         "qty": qty,
-        "entry date&time": entry_time,
+        "entry datetime": entry_time,
         "sell": sell_price,
         "buy": None,
-        "exit date&time": None,
+        "exit datetime": None,
         "p&l": None,
-        "entry reason": entry_reason,
-        "exit reason": None
+        "entry_reason": entry_reason,
+        "exit_reason": None,
+        "sl": None,
+        "entry_order_id": "Paper" if paper_trading else None,
+        "sl_order_id": "Paper" if paper_trading else None,
     }
     add_trade_log_row(trade)
 
@@ -492,7 +524,8 @@ class PaperTrader:
         paper_lot: int,
         market_config: Dict[str, Any],
         intervals_config: Dict[str, Any],
-        matched_csv_path: str
+        matched_csv_path: str,
+        indicators_dir: str
     ):
         self.interval = interval
         self.sma_period = sma_period
@@ -504,6 +537,7 @@ class PaperTrader:
         self.market_config = market_config or {}
         self.intervals_config = intervals_config or {}
         self.matched_csv_path = matched_csv_path
+        self.indicators_dir = indicators_dir
 
         self.last_pnl_report_time = None
         self.active_trades: Dict[str, Dict[str, Any]] = {}
@@ -557,7 +591,6 @@ class PaperTrader:
         p_and_l = (trade["sell"] - ltp) * trade["qty"]
 
         update_trade_exit(
-            trade["symbol"],
             trade["token"],
             datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             ltp,
@@ -566,7 +599,7 @@ class PaperTrader:
         )
 
         self.send_msg(
-            f"SL Exit: {trade['symbol']} @ {ltp:.2f}, "
+            f"SL Exit: {trade['strike']} {trade['strike_side']} @ {ltp:.2f}, "
             f"SL={trade['sell'] * 1.20:.2f}, "
             f"P&L={p_and_l:.2f}"
         )
@@ -600,7 +633,7 @@ class PaperTrader:
             sl_price = trade["sell"] * 1.20
 
             details.append(
-                f"{trade['symbol']} | {trade['qty']} | {trade['sell']:.2f} | {ltp:.2f} | "
+                f"{trade['strike']} {trade['strike_side']} | {trade['qty']} | {trade['sell']:.2f} | {ltp:.2f} | "
                 f"SL: {sl_price:.2f} | P&L: {pnl:+.2f}"
             )
 
@@ -646,7 +679,9 @@ class PaperTrader:
                 selected = filter_strikes(close_price, option_data, single_type=single_type)
                 if selected is not None:
                     log_trade_entry(
-                        selected["symbol"],
+                        selected["type"],
+                        selected["strike"],
+                        selected.get("a_expiry", self.expiry_str),
                         selected["token"],
                         open_price,
                         close_price,
@@ -654,17 +689,20 @@ class PaperTrader:
                         self.qty,
                         entry_time,
                         selected["premium"],
-                        entry_reason
+                        entry_reason,
+                        self.paper_trading
                     )
                     self.active_trades[str(selected["token"])] = {
-                        "symbol": selected["symbol"],
+                        "strike_side": selected["type"],
+                        "strike": selected["strike"],
+                        "expiry": selected.get("a_expiry", self.expiry_str),
                         "token": selected["token"],
                         "sell": selected["premium"],
                         "qty": self.qty,
                         "entry_time": entry_time
                     }
                     self.send_msg(
-                        f"{prefix}: {single_type} {selected['symbol']}@{selected['premium']:.2f}, "
+                        f"{prefix}: {single_type} {selected['strike']} {selected['type']}@{selected['premium']:.2f}, "
                         f"Trend={trend}, Entry Reason={entry_reason}"
                     )
                     entered = True
@@ -677,7 +715,9 @@ class PaperTrader:
 
                 if ce_option is not None:
                     log_trade_entry(
-                        ce_option["symbol"],
+                        ce_option["type"],
+                        ce_option["strike"],
+                        ce_option.get("a_expiry", self.expiry_str),
                         ce_option["token"],
                         open_price,
                         close_price,
@@ -685,22 +725,27 @@ class PaperTrader:
                         self.qty,
                         entry_time,
                         ce_option["premium"],
-                        entry_reason
+                        entry_reason,
+                        self.paper_trading
                     )
                     self.active_trades[str(ce_option["token"])] = {
-                        "symbol": ce_option["symbol"],
+                        "strike_side": ce_option["type"],
+                        "strike": ce_option["strike"],
+                        "expiry": ce_option.get("a_expiry", self.expiry_str),
                         "token": ce_option["token"],
                         "sell": ce_option["premium"],
                         "qty": self.qty,
                         "entry_time": entry_time
                     }
-                    ce_str = ce_option["symbol"]
+                    ce_str = f"{ce_option['strike']} {ce_option['type']}"
                     ce_prem = f"{ce_option['premium']:.2f}"
                     entered = True
 
                 if pe_option is not None:
                     log_trade_entry(
-                        pe_option["symbol"],
+                        pe_option["type"],
+                        pe_option["strike"],
+                        pe_option.get("a_expiry", self.expiry_str),
                         pe_option["token"],
                         open_price,
                         close_price,
@@ -708,16 +753,19 @@ class PaperTrader:
                         self.qty,
                         entry_time,
                         pe_option["premium"],
-                        entry_reason
+                        entry_reason,
+                        self.paper_trading
                     )
                     self.active_trades[str(pe_option["token"])] = {
-                        "symbol": pe_option["symbol"],
+                        "strike_side": pe_option["type"],
+                        "strike": pe_option["strike"],
+                        "expiry": pe_option.get("a_expiry", self.expiry_str),
                         "token": pe_option["token"],
                         "sell": pe_option["premium"],
                         "qty": self.qty,
                         "entry_time": entry_time
                     }
-                    pe_str = pe_option["symbol"]
+                    pe_str = f"{pe_option['strike']} {pe_option['type']}"
                     pe_prem = f"{pe_option['premium']:.2f}"
                     entered = True
 
@@ -841,7 +889,7 @@ class PaperTrader:
                 indicator_data = None
 
                 while retry_for_this_candle < 5:
-                    indicator_data = load_nifty_indicators(self.interval, self.intervals_config)
+                    indicator_data = load_nifty_indicators(self.interval, self.intervals_config, self.indicators_dir)
                     if indicator_data is not None:
                         no_new_ohlc_counter = 0
                         break
@@ -911,14 +959,13 @@ class PaperTrader:
                         ltp = self.get_current_ltp(token, trade["sell"])
                         p_and_l = (trade["sell"] - ltp) * trade["qty"]
                         update_trade_exit(
-                            trade["symbol"],
                             trade["token"],
                             now.strftime("%Y-%m-%d %H:%M:%S"),
                             ltp,
                             p_and_l,
                             "Time Exit"
                         )
-                        self.send_msg(f"Time exit: {trade['symbol']} @ {ltp:.2f}, P&L={p_and_l:.2f}")
+                        self.send_msg(f"Time exit: {trade['strike']} {trade['strike_side']} @ {ltp:.2f}, P&L={p_and_l:.2f}")
                     self.active_trades = {}
                     self.time_exit_done = True
                     self.logger.info("Time-based exit done. Continuing to process candles until market close.")
@@ -962,10 +1009,10 @@ class PaperTrader:
                         ce_trade = pe_trade = None
 
                         for token, trade in self.active_trades.items():
-                            if trade["symbol"].endswith("CE"):
+                            if trade["strike_side"] == "CE":
                                 ce_ltp = self.get_current_ltp(token, trade["sell"])
                                 ce_trade = trade
-                            elif trade["symbol"].endswith("PE"):
+                            elif trade["strike_side"] == "PE":
                                 pe_ltp = self.get_current_ltp(token, trade["sell"])
                                 pe_trade = trade
 
@@ -981,11 +1028,11 @@ class PaperTrader:
 
                             if in_range:
                                 self.logger.info(
-                                    f"Single trade {trade['symbol']} LTP {ltp:.2f} "
+                                    f"Single trade {trade['strike']} {trade['strike_side']} LTP {ltp:.2f} "
                                     f"in 80-100 range during trend reversal, continuing."
                                 )
                                 self.send_msg(
-                                    f"Continuing {trade['symbol']} @ {ltp:.2f} "
+                                    f"Continuing {trade['strike']} {trade['strike_side']} @ {ltp:.2f} "
                                     f"due to trend reversal (LTP in 80-100 range)."
                                 )
                                 await self._enter_option_trade(
@@ -1001,7 +1048,6 @@ class PaperTrader:
                                 ltp = self.get_current_ltp(trade["token"], trade["sell"])
                                 p_and_l = (trade["sell"] - ltp) * trade["qty"]
                                 update_trade_exit(
-                                    trade["symbol"],
                                     trade["token"],
                                     now.strftime("%Y-%m-%d %H:%M:%S"),
                                     ltp,
@@ -1009,7 +1055,7 @@ class PaperTrader:
                                     "Trend Reversal - LTP Out of Range"
                                 )
                                 self.send_msg(
-                                    f"Trend reversal exit: {trade['symbol']} @ {ltp:.2f}, P&L={p_and_l:.2f}"
+                                    f"Trend reversal exit: {trade['strike']} {trade['strike_side']} @ {ltp:.2f}, P&L={p_and_l:.2f}"
                                 )
                                 del self.active_trades[str(trade["token"])]
                                 await self._enter_option_trade(
@@ -1029,7 +1075,6 @@ class PaperTrader:
                                     ltp = self.get_current_ltp(token, trade["sell"])
                                     p_and_l = (trade["sell"] - ltp) * trade["qty"]
                                     update_trade_exit(
-                                        trade["symbol"],
                                         trade["token"],
                                         now.strftime("%Y-%m-%d %H:%M:%S"),
                                         ltp,
@@ -1037,7 +1082,7 @@ class PaperTrader:
                                         "Trend Reversal - LTP Out of Range"
                                     )
                                     self.send_msg(
-                                        f"Trend reversal exit: {trade['symbol']} @ {ltp:.2f}, P&L={p_and_l:.2f}"
+                                        f"Trend reversal exit: {trade['strike']} {trade['strike_side']} @ {ltp:.2f}, P&L={p_and_l:.2f}"
                                     )
                                     del self.active_trades[token]
 
@@ -1055,7 +1100,6 @@ class PaperTrader:
                                 ltp = self.get_current_ltp(exit_trade["token"], exit_trade["sell"])
                                 p_and_l = (exit_trade["sell"] - ltp) * exit_trade["qty"]
                                 update_trade_exit(
-                                    exit_trade["symbol"],
                                     exit_trade["token"],
                                     now.strftime("%Y-%m-%d %H:%M:%S"),
                                     ltp,
@@ -1063,7 +1107,7 @@ class PaperTrader:
                                     "Trend Reversal - LTP Out of Range"
                                 )
                                 self.send_msg(
-                                    f"Trend reversal exit: {exit_trade['symbol']} @ {ltp:.2f}, P&L={p_and_l:.2f}"
+                                    f"Trend reversal exit: {exit_trade['strike']} {exit_trade['strike_side']} @ {ltp:.2f}, P&L={p_and_l:.2f}"
                                 )
                                 del self.active_trades[str(exit_trade["token"])]
                                 await self._enter_option_trade(
@@ -1092,8 +1136,8 @@ class PaperTrader:
 
                         if len(self.active_trades) == 1:
                             remaining_token = list(self.active_trades.keys())[0]
-                            remaining_symbol = self.active_trades[remaining_token]["symbol"]
-                            missing_leg = "PE" if remaining_symbol.endswith("CE") else "CE"
+                            remaining_strike_side = self.active_trades[remaining_token]["strike_side"]
+                            missing_leg = "PE" if remaining_strike_side == "CE" else "CE"
                             re_enter_status = ce_re_enter if missing_leg == "CE" else pe_re_enter
 
                             self.logger.info(
@@ -1211,7 +1255,8 @@ def main():
             paper_lot,
             market_config,
             intervals_config,
-            matched_csv_path
+            matched_csv_path,
+            indicators_dir
         ) = load_configurations()
 
         weekly_off_days = market_config.get("weekly_off_days", ["SAT", "SUN"])
@@ -1221,7 +1266,10 @@ def main():
             logger.info("Today is not a trading day. Exiting.")
             return
 
-        logger.info(f"ULTAPULTA LOGIN {today}")
+        logger.info("============================================================")
+        logger.info("NIFTY ULPL Strategy Started")
+        logger.info(f"MODE: {'PAPER TRADING' if paper_trading else 'LIVE TRADING'}")
+        logger.info("============================================================")
 
     except Exception as e:
         logger.error(f"Failed to load configurations: {e}\n{traceback.format_exc()}")
@@ -1237,7 +1285,8 @@ def main():
         paper_lot=paper_lot,
         market_config=market_config,
         intervals_config=intervals_config,
-        matched_csv_path=matched_csv_path
+        matched_csv_path=matched_csv_path,
+        indicators_dir=indicators_dir
     )
 
     tick_sub = TickSubscriber(paper_trader)
