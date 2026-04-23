@@ -796,6 +796,10 @@ class PaperTrader:
 
     async def run(self, ist: ZoneInfo, holidays: Set[date], today: date, sl_monitor):
         self.sl_monitor = sl_monitor
+        if self.sl_monitor is None:
+            class DummyMonitor:
+                def update(self, *args, **kwargs): pass
+            self.sl_monitor = DummyMonitor()
 
         market_enabled = self.market_config.get("enabled", True)
         weekly_off_days = self.market_config.get("weekly_off_days", ["SAT", "SUN"])
